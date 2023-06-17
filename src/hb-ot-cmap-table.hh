@@ -278,7 +278,7 @@ struct CmapSubtableFormat4
     } writer(c);
 
     writer.end_code_ = c->allocate_size<HBUINT16> (HBUINT16::static_size * segcount);
-    c->allocate_size<HBUINT16> (2); // padding
+    (void) c->allocate_size<HBUINT16> (2); // padding
     writer.start_code_ = c->allocate_size<HBUINT16> (HBUINT16::static_size * segcount);
     writer.id_delta_ = c->allocate_size<HBINT16> (HBINT16::static_size * segcount);
 
@@ -325,7 +325,7 @@ struct CmapSubtableFormat4
   {
     auto format4_iter =
     + it
-    | hb_filter ([&] (const hb_pair_t<hb_codepoint_t, hb_codepoint_t> _)
+    | hb_filter ([&] (const hb_codepoint_pair_t _)
 		 { return _.first <= 0xFFFF; })
     ;
 
@@ -335,7 +335,7 @@ struct CmapSubtableFormat4
     if (unlikely (!c->extend_min (this))) return;
     this->format = 4;
 
-    hb_vector_t<hb_pair_t<hb_codepoint_t, hb_codepoint_t>> cp_to_gid {
+    hb_vector_t<hb_codepoint_pair_t> cp_to_gid {
       format4_iter
     };
 
@@ -924,8 +924,7 @@ struct DefaultUVS : SortedArray32Of<UnicodeValueRange>
   DefaultUVS* copy (hb_serialize_context_t *c,
 		    const hb_set_t *unicodes) const
   {
-    DefaultUVS *out = c->start_embed<DefaultUVS> ();
-    if (unlikely (!out)) return nullptr;
+    auto *out = c->start_embed<DefaultUVS> ();
     auto snap = c->snapshot ();
 
     HBUINT32 len;
@@ -938,8 +937,7 @@ struct DefaultUVS : SortedArray32Of<UnicodeValueRange>
       hb_codepoint_t start = HB_SET_VALUE_INVALID;
       hb_codepoint_t end = HB_SET_VALUE_INVALID;
 
-      for (hb_codepoint_t u = HB_SET_VALUE_INVALID;
-	   unicodes->next (&u);)
+      for (auto u : *unicodes)
       {
         if (!as_array ().bsearch (u))
 	  continue;
@@ -1074,9 +1072,7 @@ struct NonDefaultUVS : SortedArray32Of<UVSMapping>
 		       const hb_set_t *glyphs_requested,
 		       const hb_map_t *glyph_map) const
   {
-    NonDefaultUVS *out = c->start_embed<NonDefaultUVS> ();
-    if (unlikely (!out)) return nullptr;
-
+    auto *out = c->start_embed<NonDefaultUVS> ();
     auto it =
     + as_array ()
     | hb_filter ([&] (const UVSMapping& _)
@@ -1774,7 +1770,6 @@ struct cmap
     TRACE_SUBSET (this);
 
     cmap *cmap_prime = c->serializer->start_embed<cmap> ();
-    if (unlikely (!c->serializer->check_success (cmap_prime))) return_trace (false);
 
     auto encodingrec_iter =
     + hb_iter (encodingRecord)
@@ -1805,7 +1800,7 @@ struct cmap
 
     auto it =
     + c->plan->unicode_to_new_gid_list.iter ()
-    | hb_filter ([&] (const hb_pair_t<hb_codepoint_t, hb_codepoint_t> _)
+    | hb_filter ([&] (const hb_codepoint_pair_t _)
 		 { return (_.second != HB_MAP_VALUE_INVALID); })
     ;
 

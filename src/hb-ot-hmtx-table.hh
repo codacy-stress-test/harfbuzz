@@ -158,32 +158,31 @@ struct hmtxvmtx
 	   hb_requires (hb_is_iterator (Iterator))>
   void serialize (hb_serialize_context_t *c,
 		  Iterator it,
-		  unsigned num_long_metrics)
+		  const hb_vector_t<hb_codepoint_pair_t> new_to_old_gid_list,
+		  unsigned num_long_metrics,
+                  unsigned total_num_metrics)
   {
-    unsigned idx = 0;
-    for (auto _ : it)
+    LongMetric* long_metrics = c->allocate_size<LongMetric> (num_long_metrics * LongMetric::static_size);
+    FWORD* short_metrics = c->allocate_size<FWORD> ((total_num_metrics - num_long_metrics) * FWORD::static_size);
+    if (!long_metrics || !short_metrics) return;
+
+    short_metrics -= num_long_metrics;
+
+    for (auto _ : new_to_old_gid_list)
     {
-      if (idx < num_long_metrics)
+      hb_codepoint_t gid = _.first;
+      auto mtx = *it++;
+
+      if (gid < num_long_metrics)
       {
-	LongMetric lm;
-	lm.advance = _.first;
-	lm.sb = _.second;
-	if (unlikely (!c->embed<LongMetric> (&lm))) return;
+	LongMetric& lm = long_metrics[gid];
+	lm.advance = mtx.first;
+	lm.sb = mtx.second;
       }
-      else if (idx < 0x10000u)
-      {
-	FWORD *sb = c->allocate_size<FWORD> (FWORD::static_size);
-	if (unlikely (!sb)) return;
-	*sb = _.second;
-      }
+      else if (gid < 0x10000u)
+        short_metrics[gid] = mtx.second;
       else
-      {
-        // TODO: This does not do tail optimization.
-	UFWORD *adv = c->allocate_size<UFWORD> (UFWORD::static_size);
-	if (unlikely (!adv)) return;
-	*adv = _.first;
-      }
-      idx++;
+        ((UFWORD*) short_metrics)[gid] = mtx.first;
     }
   }
 
@@ -191,8 +190,7 @@ struct hmtxvmtx
   {
     TRACE_SUBSET (this);
 
-    T *table_prime = c->serializer->start_embed <T> ();
-    if (unlikely (!table_prime)) return_trace (false);
+    auto *table_prime = c->serializer->start_embed <T> ();
 
     accelerator_t _mtx (c->plan->source);
     unsigned num_long_metrics;
@@ -211,24 +209,29 @@ struct hmtxvmtx
     }
 
     auto it =
-    + hb_range (c->plan->num_output_glyphs ())
-    | hb_map ([c, &_mtx, mtx_map] (unsigned _)
+    + hb_iter (c->plan->new_to_old_gid_list)
+    | hb_map ([c, &_mtx, mtx_map] (hb_codepoint_pair_t _)
 	      {
-		if (!mtx_map->has (_))
+		hb_codepoint_t new_gid = _.first;
+		hb_codepoint_t old_gid = _.second;
+
+		hb_pair_t<unsigned, int> *v = nullptr;
+		if (!mtx_map->has (new_gid, &v))
 		{
-		  hb_codepoint_t old_gid;
-		  if (!c->plan->old_gid_for_new_gid (_, &old_gid))
-		    return hb_pair (0u, 0);
 		  int lsb = 0;
 		  if (!_mtx.get_leading_bearing_without_var_unscaled (old_gid, &lsb))
 		    (void) _glyf_get_leading_bearing_without_var_unscaled (c->plan->source, old_gid, !T::is_horizontal, &lsb);
 		  return hb_pair (_mtx.get_advance_without_var_unscaled (old_gid), +lsb);
 		}
-		return mtx_map->get (_);
+		return *v;
 	      })
     ;
 
-    table_prime->serialize (c->serializer, it, num_long_metrics);
+    table_prime->serialize (c->serializer,
+			    it,
+			    c->plan->new_to_old_gid_list,
+			    num_long_metrics,
+			    c->plan->num_output_glyphs ());
 
     if (unlikely (c->serializer->in_error ()))
       return_trace (false);

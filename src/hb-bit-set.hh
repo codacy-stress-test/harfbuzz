@@ -346,7 +346,7 @@ struct hb_bit_set_t
   /* Sink interface. */
   hb_bit_set_t& operator << (hb_codepoint_t v)
   { add (v); return *this; }
-  hb_bit_set_t& operator << (const hb_pair_t<hb_codepoint_t, hb_codepoint_t>& range)
+  hb_bit_set_t& operator << (const hb_codepoint_pair_t& range)
   { add_range (range.first, range.second); return *this; }
 
   bool intersects (hb_codepoint_t first, hb_codepoint_t last) const
@@ -866,6 +866,7 @@ struct hb_bit_set_t
   struct iter_t : hb_iter_with_fallback_t<iter_t, hb_codepoint_t>
   {
     static constexpr bool is_sorted_iterator = true;
+    static constexpr bool has_fast_len = true;
     iter_t (const hb_bit_set_t &s_ = Null (hb_bit_set_t),
 	    bool init = true) : s (&s_), v (INVALID), l(0)
     {
