@@ -1595,10 +1595,13 @@ struct ClassDefFormat1_3
       orig_klasses.add (klass);
     }
 
-    unsigned glyph_count = glyph_filter
-                           ? hb_len (hb_iter (glyph_map.keys()) | hb_filter (glyph_filter))
-                           : glyph_map.get_population ();
-    use_class_zero = use_class_zero && glyph_count <= glyph_and_klass.length;
+    if (use_class_zero)
+    {
+      unsigned glyph_count = glyph_filter
+			     ? hb_len (hb_iter (glyph_map.keys()) | hb_filter (glyph_filter))
+			     : glyph_map.get_population ();
+      use_class_zero = glyph_count <= glyph_and_klass.length;
+    }
     if (!ClassDef_remap_and_serialize (c->serializer,
                                        orig_klasses,
                                        use_class_zero,
@@ -2379,7 +2382,7 @@ struct VarRegionList
     return_trace (c->check_struct (this) && axesZ.sanitize (c, axisCount * regionCount));
   }
 
-  bool serialize (hb_serialize_context_t *c, const VarRegionList *src, const hb_bimap_t &region_map)
+  bool serialize (hb_serialize_context_t *c, const VarRegionList *src, const hb_inc_bimap_t &region_map)
   {
     TRACE_SERIALIZE (this);
     if (unlikely (!c->extend_min (this))) return_trace (false);
@@ -2496,7 +2499,7 @@ struct VarData
   bool serialize (hb_serialize_context_t *c,
 		  const VarData *src,
 		  const hb_inc_bimap_t &inner_map,
-		  const hb_bimap_t &region_map)
+		  const hb_inc_bimap_t &region_map)
   {
     TRACE_SERIALIZE (this);
     if (unlikely (!c->extend_min (this))) return_trace (false);

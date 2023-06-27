@@ -45,9 +45,9 @@ struct hb_hashmap_t
   hb_hashmap_t ()  { init (); }
   ~hb_hashmap_t () { fini (); }
 
-  hb_hashmap_t (const hb_hashmap_t& o) : hb_hashmap_t () { resize (o.population); hb_copy (o, *this); }
+  hb_hashmap_t (const hb_hashmap_t& o) : hb_hashmap_t () { alloc (o.population); hb_copy (o, *this); }
   hb_hashmap_t (hb_hashmap_t&& o) : hb_hashmap_t () { hb_swap (*this, o); }
-  hb_hashmap_t& operator= (const hb_hashmap_t& o)  { reset (); resize (o.population); hb_copy (o, *this); return *this; }
+  hb_hashmap_t& operator= (const hb_hashmap_t& o)  { reset (); alloc (o.population); hb_copy (o, *this); return *this; }
   hb_hashmap_t& operator= (hb_hashmap_t&& o)  { hb_swap (*this, o); return *this; }
 
   hb_hashmap_t (std::initializer_list<hb_pair_t<K, V>> lst) : hb_hashmap_t ()
@@ -61,28 +61,27 @@ struct hb_hashmap_t
   {
     auto iter = hb_iter (o);
     if (iter.is_random_access_iterator || iter.has_fast_len)
-      resize (hb_len (iter));
+      alloc (hb_len (iter));
     hb_copy (iter, *this);
   }
 
   struct item_t
   {
     K key;
+    uint32_t is_real_ : 1;
     uint32_t is_used_ : 1;
-    uint32_t is_tombstone_ : 1;
     uint32_t hash : 30;
     V value;
 
     item_t () : key (),
-		is_used_ (false), is_tombstone_ (false),
+		is_real_ (false), is_used_ (false),
 		hash (0),
 		value () {}
 
     bool is_used () const { return is_used_; }
     void set_used (bool is_used) { is_used_ = is_used; }
-    bool is_tombstone () const { return is_tombstone_; }
-    void set_tombstone (bool is_tombstone) { is_tombstone_ = is_tombstone; }
-    bool is_real () const { return is_used_ && !is_tombstone_; }
+    void set_real (bool is_real) { is_real_ = is_real; }
+    bool is_real () const { return is_real_; }
 
     template <bool v = minus_one,
 	      hb_enable_if (v == false)>
@@ -98,10 +97,15 @@ struct hb_hashmap_t
     bool operator == (const K &o) const { return hb_deref (key) == hb_deref (o); }
     bool operator == (const item_t &o) const { return *this == o.key; }
     hb_pair_t<K, V> get_pair() const { return hb_pair_t<K, V> (key, value); }
-    hb_pair_t<const K &, const V &> get_pair_ref() const { return hb_pair_t<const K &, const V &> (key, value); }
+    hb_pair_t<const K &, V &> get_pair_ref() { return hb_pair_t<const K &, V &> (key, value); }
 
     uint32_t total_hash () const
     { return (hash * 31) + hb_hash (value); }
+
+    static constexpr bool is_trivial = std::is_trivially_constructible<K>::value &&
+				       std::is_trivially_destructible<K>::value &&
+				       std::is_trivially_constructible<V>::value &&
+				       std::is_trivially_destructible<V>::value;
   };
 
   hb_object_header_t header;
@@ -142,10 +146,12 @@ struct hb_hashmap_t
   {
     hb_object_fini (this);
 
-    if (likely (items)) {
+    if (likely (items))
+    {
       unsigned size = mask + 1;
-      for (unsigned i = 0; i < size; i++)
-        items[i].~item_t ();
+      if (!item_t::is_trivial)
+	for (unsigned i = 0; i < size; i++)
+	  items[i].~item_t ();
       hb_free (items);
       items = nullptr;
     }
@@ -160,7 +166,7 @@ struct hb_hashmap_t
 
   bool in_error () const { return !successful; }
 
-  bool resize (unsigned new_population = 0)
+  bool alloc (unsigned new_population = 0)
   {
     if (unlikely (!successful)) return false;
 
@@ -174,8 +180,11 @@ struct hb_hashmap_t
       successful = false;
       return false;
     }
-    for (auto &_ : hb_iter (new_items, new_size))
-      new (&_) item_t ();
+    if (!item_t::is_trivial)
+      for (auto &_ : hb_iter (new_items, new_size))
+	new (&_) item_t ();
+    else
+      hb_memset (new_items, 0, (size_t) new_size * sizeof (item_t));
 
     unsigned int old_size = size ();
     item_t *old_items = items;
@@ -196,7 +205,8 @@ struct hb_hashmap_t
 		       old_items[i].hash,
 		       std::move (old_items[i].value));
       }
-      old_items[i].~item_t ();
+      if (!item_t::is_trivial)
+	old_items[i].~item_t ();
     }
 
     hb_free (old_items);
@@ -208,7 +218,7 @@ struct hb_hashmap_t
   bool set_with_hash (KK&& key, uint32_t hash, VV&& value, bool overwrite = true)
   {
     if (unlikely (!successful)) return false;
-    if (unlikely ((occupancy + occupancy / 2) >= mask && !resize ())) return false;
+    if (unlikely ((occupancy + occupancy / 2) >= mask && !alloc ())) return false;
 
     hash &= 0x3FFFFFFF; // We only store lower 30bit of hash
     unsigned int tombstone = (unsigned int) -1;
@@ -225,7 +235,7 @@ struct hb_hashmap_t
         else
 	  break;
       }
-      if (items[i].is_tombstone () && tombstone == (unsigned) -1)
+      if (!items[i].is_real () && tombstone == (unsigned) -1)
         tombstone = i;
       i = (i + ++step) & mask;
       length++;
@@ -236,21 +246,20 @@ struct hb_hashmap_t
     if (item.is_used ())
     {
       occupancy--;
-      if (!item.is_tombstone ())
-	population--;
+      population -= item.is_real ();
     }
 
     item.key = std::forward<KK> (key);
     item.value = std::forward<VV> (value);
     item.hash = hash;
     item.set_used (true);
-    item.set_tombstone (false);
+    item.set_real (true);
 
     occupancy++;
     population++;
 
     if (unlikely (length > max_chain_length) && occupancy * 8 > mask)
-      resize (mask - 8); // This ensures we jump to next larger size
+      alloc (mask - 8); // This ensures we jump to next larger size
 
     return true;
   }
@@ -284,7 +293,7 @@ struct hb_hashmap_t
     auto *item = fetch_item (key, hb_hash (key));
     if (item)
     {
-      item->set_tombstone (true);
+      item->set_real (false);
       population--;
     }
   }

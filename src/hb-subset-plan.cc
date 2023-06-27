@@ -48,10 +48,24 @@
 using OT::Layout::GSUB;
 using OT::Layout::GPOS;
 
+
+hb_subset_accelerator_t::~hb_subset_accelerator_t ()
+{
+  if (cmap_cache && destroy_cmap_cache)
+    destroy_cmap_cache ((void*) cmap_cache);
+
+#ifndef HB_NO_SUBSET_CFF
+  cff1_accel.fini ();
+  cff2_accel.fini ();
+#endif
+  hb_face_destroy (source);
+}
+
+
 typedef hb_hashmap_t<unsigned, hb::unique_ptr<hb_set_t>> script_langsys_map;
 #ifndef HB_NO_SUBSET_CFF
 static inline bool
-_add_cff_seac_components (const OT::cff1::accelerator_t &cff,
+_add_cff_seac_components (const OT::cff1::accelerator_subset_t &cff,
 			  hb_codepoint_t gid,
 			  hb_set_t *gids_to_retain)
 {
@@ -335,7 +349,7 @@ _generate_varstore_inner_maps (const hb_set_t& varidx_set,
 {
   if (varidx_set.is_empty () || subtable_count == 0) return;
 
-  inner_maps.resize (subtable_count);
+  if (unlikely (!inner_maps.resize (subtable_count))) return;
   for (unsigned idx : varidx_set)
   {
     uint16_t major = idx >> 16;
@@ -547,7 +561,7 @@ _populate_unicodes_to_retain (const hb_set_t *unicodes,
 	unicodes->get_population () < cmap_unicodes->get_population () &&
 	glyphs->get_population () < cmap_unicodes->get_population ())
     {
-      plan->codepoint_to_glyph->resize (unicodes->get_population () + glyphs->get_population ());
+      plan->codepoint_to_glyph->alloc (unicodes->get_population () + glyphs->get_population ());
 
       auto &gid_to_unicodes = plan->accelerator->gid_to_unicodes;
       for (hb_codepoint_t gid : *glyphs)
@@ -577,7 +591,7 @@ _populate_unicodes_to_retain (const hb_set_t *unicodes,
     }
     else
     {
-      plan->codepoint_to_glyph->resize (cmap_unicodes->get_population ());
+      plan->codepoint_to_glyph->alloc (cmap_unicodes->get_population ());
       for (hb_codepoint_t cp : *cmap_unicodes)
       {
 	hb_codepoint_t gid = (*unicode_glyphid_map)[cp];
@@ -590,9 +604,10 @@ _populate_unicodes_to_retain (const hb_set_t *unicodes,
     }
 
     /* Add gids which where requested, but not mapped in cmap */
+    unsigned num_glyphs = plan->source->get_num_glyphs ();
     for (hb_codepoint_t gid : *glyphs)
     {
-      if (gid >= plan->source->get_num_glyphs ())
+      if (gid >= num_glyphs)
 	break;
       plan->_glyphset_gsub.add (gid);
     }
@@ -688,7 +703,11 @@ _populate_gids_to_retain (hb_subset_plan_t* plan,
 {
   OT::glyf_accelerator_t glyf (plan->source);
 #ifndef HB_NO_SUBSET_CFF
-  OT::cff1::accelerator_t cff (plan->source);
+  // Note: we cannot use inprogress_accelerator here, since it has not been
+  // created yet. So in case of preprocessed-face (and otherwise), we do an
+  // extra sanitize pass here, which is not ideal.
+  OT::cff1::accelerator_subset_t stack_cff (plan->accelerator ? nullptr : plan->source);
+  const OT::cff1::accelerator_subset_t *cff (plan->accelerator ? plan->accelerator->cff1_accel.get () : &stack_cff);
 #endif
 
   plan->_glyphset_gsub.add (0); // Not-def
@@ -750,9 +769,9 @@ _populate_gids_to_retain (hb_subset_plan_t* plan,
   if (!plan->accelerator || plan->accelerator->has_seac)
   {
     bool has_seac = false;
-    if (cff.is_valid ())
+    if (cff->is_valid ())
       for (hb_codepoint_t gid : cur_glyphset)
-	if (_add_cff_seac_components (cff, gid, &plan->_glyphset))
+	if (_add_cff_seac_components (*cff, gid, &plan->_glyphset))
 	  has_seac = true;
     plan->has_seac = has_seac;
   }
@@ -771,7 +790,7 @@ _create_glyph_map_gsub (const hb_set_t* glyph_set_gsub,
                         const hb_map_t* glyph_map,
                         hb_map_t* out)
 {
-  out->resize (glyph_set_gsub->get_population ());
+  out->alloc (glyph_set_gsub->get_population ());
   + hb_iter (glyph_set_gsub)
   | hb_map ([&] (hb_codepoint_t gid) {
     return hb_codepoint_pair_t (gid, glyph_map->get (gid));
@@ -791,8 +810,8 @@ _create_old_gid_to_new_gid_map (const hb_face_t *face,
 				unsigned int	*num_glyphs /* OUT */)
 {
   unsigned pop = all_gids_to_retain->get_population ();
-  reverse_glyph_map->resize (pop);
-  glyph_map->resize (pop);
+  reverse_glyph_map->alloc (pop);
+  glyph_map->alloc (pop);
   new_to_old_gid_list->alloc (pop);
 
   if (*requested_glyph_map)
@@ -1128,20 +1147,9 @@ hb_subset_plan_t::hb_subset_plan_t (hb_face_t *face,
 
   if (attach_accelerator_data)
   {
-    hb_multimap_t gid_to_unicodes;
-
-    hb_map_t &unicode_to_gid = *codepoint_to_glyph;
-
-    gid_to_unicodes.resize (unicodes.get_population ());
-    for (auto unicode : unicodes)
-    {
-      auto gid = unicode_to_gid[unicode];
-      gid_to_unicodes.add (gid, unicode);
-    }
-
     inprogress_accelerator =
-      hb_subset_accelerator_t::create (*codepoint_to_glyph,
-				       gid_to_unicodes,
+      hb_subset_accelerator_t::create (source,
+				       *codepoint_to_glyph,
                                        unicodes,
 				       has_seac);
 
@@ -1152,6 +1160,29 @@ hb_subset_plan_t::hb_subset_plan_t (hb_face_t *face,
 #include "hb-subset-plan-member-list.hh"
 #undef HB_SUBSET_PLAN_MEMBER
 }
+
+hb_subset_plan_t::~hb_subset_plan_t()
+{
+  hb_face_destroy (dest);
+
+  hb_map_destroy (codepoint_to_glyph);
+  hb_map_destroy (glyph_map);
+  hb_map_destroy (reverse_glyph_map);
+#ifndef HB_NO_SUBSET_CFF
+  cff1_accel.fini ();
+  cff2_accel.fini ();
+#endif
+  hb_face_destroy (source);
+
+#ifdef HB_EXPERIMENTAL_API
+  for (auto _ : name_table_overrides.iter_ref ())
+    _.second.fini ();
+#endif
+
+  if (inprogress_accelerator)
+    hb_subset_accelerator_t::destroy ((void*) inprogress_accelerator);
+}
+
 
 /**
  * hb_subset_plan_create_or_fail:

@@ -297,10 +297,28 @@ static inline uint64_t fasthash64(const void *buf, size_t len, uint64_t seed)
 	uint64_t h = seed ^ (len * m);
 	uint64_t v;
 
-	while (pos != end) {
-		v  = pos++->v;
-		h ^= mix(v);
-		h *= m;
+#ifndef HB_OPTIMIZE_SIZE
+	if (((uintptr_t) pos & 7) == 0)
+	{
+	  while (pos != end)
+	  {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-align"
+	    v  = * (const uint64_t *) (pos++);
+#pragma GCC diagnostic pop
+	    h ^= mix(v);
+	    h *= m;
+	  }
+	}
+	else
+#endif
+	{
+	  while (pos != end)
+	  {
+	    v  = pos++->v;
+	    h ^= mix(v);
+	    h *= m;
+	  }
 	}
 
 	pos2 = (const unsigned char*)pos;
@@ -966,7 +984,7 @@ static inline void *
 hb_memset (void *s, int c, unsigned int n)
 {
   /* It's illegal to pass NULL to memset(), even if n is zero. */
-  if (unlikely (!n)) return 0;
+  if (unlikely (!n)) return s;
   return memset (s, c, n);
 }
 

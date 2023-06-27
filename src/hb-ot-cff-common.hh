@@ -52,8 +52,10 @@ struct code_pair_t
   hb_codepoint_t glyph;
 };
 
+
 using str_buff_t = hb_vector_t<unsigned char>;
 using str_buff_vec_t = hb_vector_t<str_buff_t>;
+using glyph_to_sid_map_t = hb_vector_t<code_pair_t>;
 
 /* CFF INDEX */
 template <typename COUNT>
@@ -65,11 +67,12 @@ struct CFFIndex
   template <typename Iterable,
 	    hb_requires (hb_is_iterable (Iterable))>
   bool serialize (hb_serialize_context_t *c,
-		  const Iterable &iterable)
+		  const Iterable &iterable,
+		  unsigned data_size = 0)
   {
     TRACE_SERIALIZE (this);
     auto it = hb_iter (iterable);
-    unsigned size = serialize_header(c, + it | hb_map (hb_iter) | hb_map (hb_len));
+    unsigned size = serialize_header(c, + it | hb_map (hb_iter) | hb_map (hb_len), data_size);
     unsigned char *ret = c->allocate_size<unsigned char> (size, false);
     if (unlikely (!ret)) return_trace (false);
     for (const auto &_ : +it)
@@ -91,11 +94,12 @@ struct CFFIndex
   template <typename Iterator,
 	    hb_requires (hb_is_iterator (Iterator))>
   unsigned serialize_header (hb_serialize_context_t *c,
-			     Iterator it)
+			     Iterator it,
+			     unsigned data_size = 0)
   {
     TRACE_SERIALIZE (this);
 
-    unsigned total = + it | hb_reduce (hb_add, 0);
+    unsigned total = data_size ? data_size : + it | hb_reduce (hb_add, 0);
     unsigned off_size = (hb_bit_storage (total + 1) + 7) / 8;
 
     /* serialize CFFIndex header */
@@ -174,15 +178,21 @@ struct CFFIndex
 
   template <typename Iterable,
 	    hb_requires (hb_is_iterable (Iterable))>
-  static unsigned total_size (const Iterable &iterable)
+  static unsigned total_size (const Iterable &iterable, unsigned *data_size = nullptr)
   {
     auto it = + hb_iter (iterable) | hb_map (hb_iter) | hb_map (hb_len);
-    // The following should return min_size IMO. But that crashes a few
-    // tests. I have not investigated why.
-    if (!it) return 0; //min_size;
+    if (!it)
+    {
+      if (data_size) *data_size = 0;
+      // The following should return min_size IMO. But that crashes a few
+      // tests. I have not investigated why.
+      return 0; //min_size;
+    }
 
     unsigned total = + it | hb_reduce (hb_add, 0);
     unsigned off_size = (hb_bit_storage (total + 1) + 7) / 8;
+
+    if (data_size) *data_size = total;
 
     return min_size + HBUINT8::static_size + (hb_len (it) + 1) * off_size + total;
   }
@@ -350,7 +360,11 @@ struct FDArray : CFFIndex<COUNT>
 
     /* serialize INDEX data */
     hb_vector_t<unsigned> sizes;
+    if (it.is_random_access_iterator)
+      sizes.alloc (hb_len (it));
+
     c->push ();
+    char *data_base = c->head;
     + it
     | hb_map ([&] (const hb_pair_t<const DICTVAL&, const INFO&> &_)
     {
@@ -360,13 +374,14 @@ struct FDArray : CFFIndex<COUNT>
 	      })
     | hb_sink (sizes)
     ;
+    unsigned data_size = c->head - data_base;
     c->pop_pack (false);
 
     /* It just happens that the above is packed right after the header below.
      * Such a hack. */
 
     /* serialize INDEX header */
-    return_trace (CFFIndex<COUNT>::serialize_header (c, hb_iter (sizes)));
+    return_trace (CFFIndex<COUNT>::serialize_header (c, hb_iter (sizes), data_size));
   }
 };
 
