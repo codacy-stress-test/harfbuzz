@@ -154,6 +154,7 @@ struct graph_t
     {
       hb_hashmap_t<unsigned, unsigned> result;
 
+      result.alloc (obj.real_links.length);
       for (const auto& l : obj.real_links) {
         result.set (l.position, l.objidx);
       }
@@ -212,7 +213,10 @@ struct graph_t
       for (unsigned i = 0; i < count; i++)
       {
         if (parents.arrayZ[i] == old_index)
-          parents.arrayZ[i] = new_index;
+	{
+	  parents.arrayZ[i] = new_index;
+	  break;
+	}
       }
     }
 
@@ -465,7 +469,7 @@ struct graph_t
     {
       unsigned next_id = queue.pop_minimum().second;
 
-      hb_swap (sorted_graph[new_id], vertices_[next_id]);
+      sorted_graph[new_id] = std::move (vertices_[next_id]);
       const vertex_t& next = sorted_graph[new_id];
 
       if (unlikely (!check_success(new_id >= 0))) {
@@ -749,10 +753,10 @@ struct graph_t
   {
     for (const auto& link : vertices_[node_idx].obj.all_links ())
     {
-      const uint32_t *v;
+      hb_codepoint_t *v;
       if (subgraph.has (link.objidx, &v))
       {
-        subgraph.set (link.objidx, *v + 1);
+        (*v)++;
         continue;
       }
       subgraph.set (link.objidx, 1);
@@ -1248,12 +1252,8 @@ struct graph_t
     // (such as a fibonacci queue) with a fast decrease priority.
     unsigned count = vertices_.length;
     for (unsigned i = 0; i < count; i++)
-    {
-      if (i == vertices_.length - 1)
-        vertices_.arrayZ[i].distance = 0;
-      else
-        vertices_.arrayZ[i].distance = hb_int_max (int64_t);
-    }
+      vertices_.arrayZ[i].distance = hb_int_max (int64_t);
+    vertices_.tail ().distance = 0;
 
     hb_priority_queue_t queue;
     queue.insert (0, vertices_.length - 1);
@@ -1273,15 +1273,15 @@ struct graph_t
       {
         if (visited[link.objidx]) continue;
 
-        const auto& child = vertices_[link.objidx].obj;
+        const auto& child = vertices_.arrayZ[link.objidx].obj;
         unsigned link_width = link.width ? link.width : 4; // treat virtual offsets as 32 bits wide
         int64_t child_weight = (child.tail - child.head) +
-                               ((int64_t) 1 << (link_width * 8)) * (vertices_[link.objidx].space + 1);
+                               ((int64_t) 1 << (link_width * 8)) * (vertices_.arrayZ[link.objidx].space + 1);
         int64_t child_distance = next_distance + child_weight;
 
-        if (child_distance < vertices_[link.objidx].distance)
+        if (child_distance < vertices_.arrayZ[link.objidx].distance)
         {
-          vertices_[link.objidx].distance = child_distance;
+          vertices_.arrayZ[link.objidx].distance = child_distance;
           queue.insert (child_distance, link.objidx);
         }
       }

@@ -268,10 +268,9 @@ struct hb_sanitize_context_t :
 		    unsigned int len) const
   {
     const char *p = (const char *) base;
-    bool ok = !len ||
-	      ((uintptr_t) (p - this->start) < this->length &&
-	       (unsigned int) (this->end - p) >= len &&
-	       ((this->max_ops -= len) > 0));
+    bool ok = (uintptr_t) (p - this->start) <= this->length &&
+	      (unsigned int) (this->end - p) >= len &&
+	      ((this->max_ops -= len) > 0);
 
     DEBUG_MSG_LEVEL (SANITIZE, p, this->debug_depth+1, 0,
 		     "check_range [%p..%p]"
@@ -282,17 +281,38 @@ struct hb_sanitize_context_t :
 
     return likely (ok);
   }
+#ifndef HB_OPTIMIZE_SIZE
+  HB_ALWAYS_INLINE
+#endif
   bool check_range_fast (const void *base,
 			 unsigned int len) const
   {
     const char *p = (const char *) base;
-    bool ok = ((uintptr_t) (p - this->start) < this->length &&
+    bool ok = ((uintptr_t) (p - this->start) <= this->length &&
 	       (unsigned int) (this->end - p) >= len);
 
     DEBUG_MSG_LEVEL (SANITIZE, p, this->debug_depth+1, 0,
 		     "check_range_fast [%p..%p]"
 		     " (%u bytes) in [%p..%p] -> %s",
 		     p, p + len, len,
+		     this->start, this->end,
+		     ok ? "OK" : "OUT-OF-RANGE");
+
+    return likely (ok);
+  }
+
+#ifndef HB_OPTIMIZE_SIZE
+  HB_ALWAYS_INLINE
+#endif
+  bool check_point (const void *base) const
+  {
+    const char *p = (const char *) base;
+    bool ok = (uintptr_t) (p - this->start) <= this->length;
+
+    DEBUG_MSG_LEVEL (SANITIZE, p, this->debug_depth+1, 0,
+		     "check_point [%p]"
+		     " in [%p..%p] -> %s",
+		     p,
 		     this->start, this->end,
 		     ok ? "OK" : "OUT-OF-RANGE");
 
@@ -318,6 +338,20 @@ struct hb_sanitize_context_t :
     unsigned m;
     return !hb_unsigned_mul_overflows (a, b, &m) &&
 	   this->check_range (base, m, c);
+  }
+
+  template <typename T>
+  HB_ALWAYS_INLINE
+  bool check_array_sized (const T *base, unsigned int len, unsigned len_size) const
+  {
+    if (len_size >= 4)
+    {
+      if (unlikely (hb_unsigned_mul_overflows (len, hb_static_size (T), &len)))
+	return false;
+    }
+    else
+      len = len * hb_static_size (T);
+    return this->check_range (base, len);
   }
 
   template <typename T>
@@ -348,7 +382,12 @@ struct hb_sanitize_context_t :
 
   template <typename Type>
   bool check_struct (const Type *obj) const
-  { return likely (this->check_range_fast (obj, obj->min_size)); }
+  {
+    if (sizeof (uintptr_t) == sizeof (uint32_t))
+      return likely (this->check_range_fast (obj, obj->min_size));
+    else
+      return likely (this->check_point ((const char *) obj + obj->min_size));
+  }
 
   bool may_edit (const void *base, unsigned int len)
   {
