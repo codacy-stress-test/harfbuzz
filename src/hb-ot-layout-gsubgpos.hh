@@ -402,16 +402,6 @@ struct hb_ot_apply_context_t :
 {
   struct matcher_t
   {
-    matcher_t () :
-	     lookup_props (0),
-	     mask (-1),
-	     ignore_zwnj (false),
-	     ignore_zwj (false),
-	     per_syllable (false),
-	     syllable {0},
-	     match_func (nullptr),
-	     match_data (nullptr) {}
-
     typedef bool (*match_func_t) (hb_glyph_info_t &info, unsigned value, const void *data);
 
     void set_ignore_zwnj (bool ignore_zwnj_) { ignore_zwnj = ignore_zwnj_; }
@@ -470,14 +460,14 @@ struct hb_ot_apply_context_t :
     }
 
     protected:
-    unsigned int lookup_props;
-    hb_mask_t mask;
-    bool ignore_zwnj;
-    bool ignore_zwj;
-    bool per_syllable;
-    uint8_t syllable;
-    match_func_t match_func;
-    const void *match_data;
+    unsigned int lookup_props = 0;
+    hb_mask_t mask = -1;
+    bool ignore_zwnj = false;
+    bool ignore_zwj = false;
+    bool per_syllable = false;
+    uint8_t syllable = 0;
+    match_func_t match_func = nullptr;
+    const void *match_data = nullptr;
   };
 
   struct skipping_iterator_t
@@ -828,7 +818,7 @@ struct hb_ot_apply_context_t :
      * match_props has the set index.
      */
     if (match_props & LookupFlag::UseMarkFilteringSet)
-      return gdef.mark_set_covers (match_props >> 16, glyph);
+      return gdef_accel.mark_set_covers (match_props >> 16, glyph);
 
     /* The second byte of match_props has the meaning
      * "ignore marks of attachment type different than
@@ -1941,12 +1931,13 @@ static inline bool context_would_apply_lookup (hb_would_apply_context_t *c,
 }
 
 template <typename HBUINT>
-static inline bool context_apply_lookup (hb_ot_apply_context_t *c,
-					 unsigned int inputCount, /* Including the first glyph (not matched) */
-					 const HBUINT input[], /* Array of input values--start with second glyph */
-					 unsigned int lookupCount,
-					 const LookupRecord lookupRecord[],
-					 const ContextApplyLookupContext &lookup_context)
+HB_ALWAYS_INLINE
+static bool context_apply_lookup (hb_ot_apply_context_t *c,
+				  unsigned int inputCount, /* Including the first glyph (not matched) */
+				  const HBUINT input[], /* Array of input values--start with second glyph */
+				  unsigned int lookupCount,
+				  const LookupRecord lookupRecord[],
+				  const ContextApplyLookupContext &lookup_context)
 {
   unsigned match_end = 0;
   unsigned match_positions[HB_MAX_CONTEXT_LENGTH];
@@ -2096,7 +2087,6 @@ struct Rule
 					 * design order */
   public:
   DEFINE_SIZE_ARRAY (4, inputZ);
-  DEFINE_SIZE_MAX (65536 * (Types::HBUINT::static_size + LookupRecord::static_size));
 };
 
 template <typename Types>
@@ -2179,18 +2169,18 @@ struct RuleSet
       ;
     }
 
-    /* This version is optimized for speed by matching the first component
-     * of the rule here, instead of calling into the matching code.
+    /* This version is optimized for speed by matching the first & second
+     * components of the rule here, instead of calling into the matching code.
      *
      * Replicated from LigatureSet::apply(). */
 
     hb_ot_apply_context_t::skipping_iterator_t &skippy_iter = c->iter_input;
-    skippy_iter.reset (c->buffer->idx, 1);
+    skippy_iter.reset (c->buffer->idx, 2);
     skippy_iter.set_match_func (match_always, nullptr);
     skippy_iter.set_glyph_data ((HBUINT16 *) nullptr);
-    unsigned unsafe_to;
-    hb_glyph_info_t *first = nullptr;
-    bool matched = skippy_iter.next (&unsafe_to);
+    unsigned unsafe_to = (unsigned) -1, unsafe_to1 = 0, unsafe_to2 = 0;
+    hb_glyph_info_t *first = nullptr, *second = nullptr;
+    bool matched = skippy_iter.next ();
     if (likely (matched))
     {
       first = &c->buffer->info[skippy_iter.idx];
@@ -2204,10 +2194,27 @@ struct RuleSet
       }
     }
     else
-      goto slow;
+    {
+      /* Failed to match a next glyph. Only try applying rules that have
+       * no further input. */
+      return_trace (
+      + hb_iter (rule)
+      | hb_map (hb_add (this))
+      | hb_filter ([&] (const Rule &_) { return _.inputCount <= 1; })
+      | hb_map ([&] (const Rule &_) { return _.apply (c, lookup_context); })
+      | hb_any
+      )
+      ;
+    }
+    matched = skippy_iter.next ();
+    if (likely (matched && !skippy_iter.may_skip (c->buffer->info[skippy_iter.idx])))
+    {
+      second = &c->buffer->info[skippy_iter.idx];
+      unsafe_to2 = skippy_iter.idx + 1;
+    }
 
-    bool unsafe_to_concat = false;
-
+    auto match_input = lookup_context.funcs.match;
+    auto *input_data = lookup_context.match_data;
     for (unsigned int i = 0; i < num_rules; i++)
     {
       const auto &r = this+rule.arrayZ[i];
@@ -2215,20 +2222,32 @@ struct RuleSet
       const auto &input = r.inputZ;
 
       if (r.inputCount <= 1 ||
-	  (!lookup_context.funcs.match ||
-	   lookup_context.funcs.match (*first, input.arrayZ[0], lookup_context.match_data)))
+	  (!match_input ||
+	   match_input (*first, input.arrayZ[0], input_data)))
       {
-	if (r.apply (c, lookup_context))
+        if (!second ||
+	    (r.inputCount <= 2 ||
+	     (!match_input ||
+	      match_input (*second, input.arrayZ[1], input_data)))
+	   )
 	{
-	  if (unsafe_to_concat)
-	    c->buffer->unsafe_to_concat (c->buffer->idx, unsafe_to);
-	  return_trace (true);
+	  if (r.apply (c, lookup_context))
+	  {
+	    if (unsafe_to != (unsigned) -1)
+	      c->buffer->unsafe_to_concat (c->buffer->idx, unsafe_to);
+	    return_trace (true);
+	  }
 	}
+	else
+	  unsafe_to = unsafe_to2;
       }
       else
-        unsafe_to_concat = true;
+      {
+	if (unsafe_to == (unsigned) -1)
+	  unsafe_to = unsafe_to1;
+      }
     }
-    if (likely (unsafe_to_concat))
+    if (likely (unsafe_to != (unsigned) -1))
       c->buffer->unsafe_to_concat (c->buffer->idx, unsafe_to);
 
     return_trace (false);
@@ -3004,16 +3023,17 @@ static inline bool chain_context_would_apply_lookup (hb_would_apply_context_t *c
 }
 
 template <typename HBUINT>
-static inline bool chain_context_apply_lookup (hb_ot_apply_context_t *c,
-					       unsigned int backtrackCount,
-					       const HBUINT backtrack[],
-					       unsigned int inputCount, /* Including the first glyph (not matched) */
-					       const HBUINT input[], /* Array of input values--start with second glyph */
-					       unsigned int lookaheadCount,
-					       const HBUINT lookahead[],
-					       unsigned int lookupCount,
-					       const LookupRecord lookupRecord[],
-					       const ChainContextApplyLookupContext &lookup_context)
+HB_ALWAYS_INLINE
+static bool chain_context_apply_lookup (hb_ot_apply_context_t *c,
+					unsigned int backtrackCount,
+					const HBUINT backtrack[],
+					unsigned int inputCount, /* Including the first glyph (not matched) */
+					const HBUINT input[], /* Array of input values--start with second glyph */
+					unsigned int lookaheadCount,
+					const HBUINT lookahead[],
+					unsigned int lookupCount,
+					const LookupRecord lookupRecord[],
+					const ChainContextApplyLookupContext &lookup_context)
 {
   unsigned end_index = c->buffer->idx;
   unsigned match_end = 0;
@@ -3241,7 +3261,6 @@ struct ChainRule
 					 * design order) */
   public:
   DEFINE_SIZE_MIN (8);
-  DEFINE_SIZE_MAX (65536 * (3 * Types::HBUINT::static_size + LookupRecord::static_size));
 };
 
 template <typename Types>
@@ -3321,22 +3340,22 @@ struct ChainRuleSet
       ;
     }
 
-    /* This version is optimized for speed by matching the first component
-     * of the rule here, instead of calling into the matching code.
+    /* This version is optimized for speed by matching the first & second
+     * components of the rule here, instead of calling into the matching code.
      *
      * Replicated from LigatureSet::apply(). */
 
     hb_ot_apply_context_t::skipping_iterator_t &skippy_iter = c->iter_input;
-    skippy_iter.reset (c->buffer->idx, 1);
+    skippy_iter.reset (c->buffer->idx, 2);
     skippy_iter.set_match_func (match_always, nullptr);
     skippy_iter.set_glyph_data ((HBUINT16 *) nullptr);
-    unsigned unsafe_to;
-    hb_glyph_info_t *first = nullptr;
-    bool matched = skippy_iter.next (&unsafe_to);
+    unsigned unsafe_to = (unsigned) -1, unsafe_to1 = 0, unsafe_to2 = 0;
+    hb_glyph_info_t *first = nullptr, *second = nullptr;
+    bool matched = skippy_iter.next ();
     if (likely (matched))
     {
       first = &c->buffer->info[skippy_iter.idx];
-      unsafe_to = skippy_iter.idx + 1;
+      unsafe_to1 = skippy_iter.idx + 1;
 
       if (skippy_iter.may_skip (c->buffer->info[skippy_iter.idx]))
       {
@@ -3346,10 +3365,34 @@ struct ChainRuleSet
       }
     }
     else
-      goto slow;
+    {
+      /* Failed to match a next glyph. Only try applying rules that have
+       * no further input and lookahead. */
+      return_trace (
+      + hb_iter (rule)
+      | hb_map (hb_add (this))
+      | hb_filter ([&] (const ChainRule &_)
+		   {
+		     const auto &input = StructAfter<decltype (_.inputX)> (_.backtrack);
+		     const auto &lookahead = StructAfter<decltype (_.lookaheadX)> (input);
+		     return input.lenP1 <= 1 && lookahead.len == 0;
+		   })
+      | hb_map ([&] (const ChainRule &_) { return _.apply (c, lookup_context); })
+      | hb_any
+      )
+      ;
+    }
+    matched = skippy_iter.next ();
+    if (likely (matched && !skippy_iter.may_skip (c->buffer->info[skippy_iter.idx])))
+     {
+      second = &c->buffer->info[skippy_iter.idx];
+      unsafe_to2 = skippy_iter.idx + 1;
+     }
 
-    bool unsafe_to_concat = false;
-
+    auto match_input = lookup_context.funcs.match[1];
+    auto match_lookahead = lookup_context.funcs.match[2];
+    auto *input_data = lookup_context.match_data[1];
+    auto *lookahead_data = lookup_context.match_data[2];
     for (unsigned int i = 0; i < num_rules; i++)
     {
       const auto &r = this+rule.arrayZ[i];
@@ -3357,24 +3400,39 @@ struct ChainRuleSet
       const auto &input = StructAfter<decltype (r.inputX)> (r.backtrack);
       const auto &lookahead = StructAfter<decltype (r.lookaheadX)> (input);
 
-      if (input.lenP1 > 1 ?
-	   (!lookup_context.funcs.match[1] ||
-	    lookup_context.funcs.match[1] (*first, input.arrayZ[0], lookup_context.match_data[1]))
+      unsigned lenP1 = hb_max ((unsigned) input.lenP1, 1u);
+      if (lenP1 > 1 ?
+	   (!match_input ||
+	    match_input (*first, input.arrayZ[0], input_data))
 	  :
-	   (!lookahead.len || !lookup_context.funcs.match[2] ||
-	    lookup_context.funcs.match[2] (*first, lookahead.arrayZ[0], lookup_context.match_data[2])))
+	   (!lookahead.len || !match_lookahead ||
+	    match_lookahead (*first, lookahead.arrayZ[0], lookahead_data)))
       {
-	if (r.apply (c, lookup_context))
+        if (!second ||
+	    (lenP1 > 2 ?
+	     (!match_input ||
+	      match_input (*second, input.arrayZ[1], input_data))
+	     :
+	     (lookahead.len <= 2 - lenP1 || !match_lookahead ||
+	      match_lookahead (*second, lookahead.arrayZ[2 - lenP1], lookahead_data))))
 	{
-	  if (unsafe_to_concat)
-	    c->buffer->unsafe_to_concat (c->buffer->idx, unsafe_to);
-	  return_trace (true);
+	  if (r.apply (c, lookup_context))
+	  {
+	    if (unsafe_to != (unsigned) -1)
+	      c->buffer->unsafe_to_concat (c->buffer->idx, unsafe_to);
+	    return_trace (true);
+	  }
 	}
+	else
+	  unsafe_to = unsafe_to2;
       }
       else
-        unsafe_to_concat = true;
+      {
+	if (unsafe_to == (unsigned) -1)
+	  unsafe_to = unsafe_to1;
+      }
     }
-    if (likely (unsafe_to_concat))
+    if (likely (unsafe_to != (unsigned) -1))
       c->buffer->unsafe_to_concat (c->buffer->idx, unsafe_to);
 
     return_trace (false);
