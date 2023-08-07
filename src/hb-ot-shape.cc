@@ -765,6 +765,14 @@ hb_ot_shape_setup_masks_fraction (const hb_ot_shape_context_t *c)
 	     _hb_glyph_info_get_general_category (&info[end]) ==
 	     HB_UNICODE_GENERAL_CATEGORY_DECIMAL_NUMBER)
 	end++;
+      if (start == i || end == i + 1)
+      {
+        if (start == i)
+	  buffer->unsafe_to_concat (start, start + 1);
+	if (end == i + 1)
+	  buffer->unsafe_to_concat (end - 1, end);
+	continue;
+      }
 
       buffer->unsafe_to_break (start, end);
 
