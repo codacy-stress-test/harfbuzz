@@ -1174,7 +1174,9 @@ struct TupleVariationData
 
     bool create_from_item_var_data (const VarData &var_data,
                                     const hb_vector_t<hb_hashmap_t<hb_tag_t, Triple>>& regions,
-                                    const hb_map_t& axes_old_index_tag_map)
+                                    const hb_map_t& axes_old_index_tag_map,
+                                    unsigned& item_count,
+                                    const hb_inc_bimap_t* inner_map = nullptr)
     {
       /* NULL offset, to keep original varidx valid, just return */
       if (&var_data == &Null (VarData))
@@ -1183,7 +1185,8 @@ struct TupleVariationData
       unsigned num_regions = var_data.get_region_index_count ();
       if (!tuple_vars.alloc (num_regions)) return false;
   
-      unsigned item_count = var_data.get_item_count ();
+      item_count = inner_map ? inner_map->get_population () : var_data.get_item_count ();
+      if (!item_count) return true;
       unsigned row_size = var_data.get_row_size ();
       const HBUINT8 *delta_bytes = var_data.get_delta_bytes ();
   
@@ -1199,7 +1202,8 @@ struct TupleVariationData
         for (unsigned i = 0; i < item_count; i++)
         {
           tuple.indices.arrayZ[i] = true;
-          tuple.deltas_x.arrayZ[i] = var_data.get_item_delta_fast (i, r, delta_bytes, row_size);
+          tuple.deltas_x.arrayZ[i] = var_data.get_item_delta_fast (inner_map ? inner_map->backward (i) : i,
+                                                                   r, delta_bytes, row_size);
         }
   
         unsigned region_index = var_data.get_region_index (r);
@@ -1773,6 +1777,14 @@ struct item_variations_t
    * have the same num of deltas (rows) */
   hb_vector_t<tuple_variations_t> vars;
 
+  /* num of retained rows for each subtable, there're 2 cases when var_data is empty:
+   * 1. retained item_count is zero
+   * 2. regions is empty and item_count is non-zero.
+   * when converting to tuples, both will be dropped because the tuple is empty,
+   * however, we need to retain 2. as all-zero rows to keep original varidx
+   * valid, so we need a way to remember the num of rows for each subtable */
+  hb_vector_t<unsigned> var_data_num_rows;
+
   /* original region list, decompiled from item varstore, used when rebuilding
    * region list after instantiation */
   hb_vector_t<hb_hashmap_t<hb_tag_t, Triple>> orig_region_list;
@@ -1810,31 +1822,54 @@ struct item_variations_t
   const hb_map_t& get_varidx_map () const
   { return varidx_map; }
 
+  bool instantiate (const VariationStore& varStore,
+                    const hb_subset_plan_t *plan,
+                    bool optimize=true,
+                    bool use_no_variation_idx=true,
+                    const hb_array_t <const hb_inc_bimap_t> inner_maps = hb_array_t<const hb_inc_bimap_t> ())
+  {
+    if (!create_from_item_varstore (varStore, plan->axes_old_index_tag_map, inner_maps))
+      return false;
+    if (!instantiate_tuple_vars (plan->axes_location, plan->axes_triple_distances))
+      return false;
+    return as_item_varstore (optimize, use_no_variation_idx);
+  }
+
+  /* keep below APIs public only for unit test: test-item-varstore */
   bool create_from_item_varstore (const VariationStore& varStore,
-                                  const hb_map_t& axes_old_index_tag_map)
+                                  const hb_map_t& axes_old_index_tag_map,
+                                  const hb_array_t <const hb_inc_bimap_t> inner_maps = hb_array_t<const hb_inc_bimap_t> ())
   {
     const VarRegionList& regionList = varStore.get_region_list ();
     if (!regionList.get_var_regions (axes_old_index_tag_map, orig_region_list))
       return false;
 
     unsigned num_var_data = varStore.get_sub_table_count ();
-    if (!vars.alloc (num_var_data)) return false;
+    if (inner_maps && inner_maps.length != num_var_data) return false;
+    if (!vars.alloc (num_var_data) ||
+        !var_data_num_rows.alloc (num_var_data)) return false;
 
     for (unsigned i = 0; i < num_var_data; i++)
     {
+      if (inner_maps && !inner_maps.arrayZ[i].get_population ())
+          continue;
       tuple_variations_t var_data_tuples;
+      unsigned item_count = 0;
       if (!var_data_tuples.create_from_item_var_data (varStore.get_sub_table (i),
                                                       orig_region_list,
-                                                      axes_old_index_tag_map))
+                                                      axes_old_index_tag_map,
+                                                      item_count,
+                                                      inner_maps ? &(inner_maps.arrayZ[i]) : nullptr))
         return false;
 
+      var_data_num_rows.push (item_count);
       vars.push (std::move (var_data_tuples));
     }
-    return !vars.in_error ();
+    return !vars.in_error () && !var_data_num_rows.in_error () && vars.length == var_data_num_rows.length;
   }
 
-  bool instantiate (const hb_hashmap_t<hb_tag_t, Triple>& normalized_axes_location,
-                    const hb_hashmap_t<hb_tag_t, TripleDistances>& axes_triple_distances)
+  bool instantiate_tuple_vars (const hb_hashmap_t<hb_tag_t, Triple>& normalized_axes_location,
+                               const hb_hashmap_t<hb_tag_t, TripleDistances>& axes_triple_distances)
   {
     for (tuple_variations_t& tuple_vars : vars)
       if (!tuple_vars.instantiate (normalized_axes_location, axes_triple_distances))
@@ -1915,18 +1950,45 @@ struct item_variations_t
     return (!region_list.in_error ()) && (!region_map.in_error ());
   }
 
-  /* main algorithm ported from fonttools VarStore_optimize() method */
-  bool optimize (bool use_no_variation_idx=true)
+  /* main algorithm ported from fonttools VarStore_optimize() method, optimize
+   * varstore by default */
+
+  struct combined_gain_idx_tuple_t
   {
+    int gain;
+    unsigned idx_1;
+    unsigned idx_2;
+
+    combined_gain_idx_tuple_t () = default;
+    combined_gain_idx_tuple_t (int gain_, unsigned i, unsigned j)
+        :gain (gain_), idx_1 (i), idx_2 (j) {}
+
+    bool operator < (const combined_gain_idx_tuple_t& o)
+    {
+      if (gain != o.gain)
+        return gain < o.gain;
+
+      if (idx_1 != o.idx_1)
+        return idx_1 < o.idx_1;
+
+      return idx_2 < o.idx_2;
+    }
+
+    bool operator <= (const combined_gain_idx_tuple_t& o)
+    {
+      if (*this < o) return true;
+      return gain == o.gain && idx_1 == o.idx_1 && idx_2 == o.idx_2;
+    }
+  };
+
+  bool as_item_varstore (bool optimize=true, bool use_no_variation_idx=true)
+  {
+    if (!region_list) return false;
     unsigned num_cols = region_list.length;
     /* pre-alloc a 2D vector for all sub_table's VarData rows */
     unsigned total_rows = 0;
-    for (unsigned major = 0; major < vars.length; major++)
-    {
-      const tuple_variations_t& tuples = vars[major];
-      /* all tuples in each sub_table should have same num of deltas(num rows) */
-      total_rows += tuples.tuple_vars[0].deltas_x.length;
-    }
+    for (unsigned major = 0; major < var_data_num_rows.length; major++)
+      total_rows += var_data_num_rows[major];
 
     if (!delta_rows.resize (total_rows)) return false;
     /* init all rows to [0]*num_cols */
@@ -1946,7 +2008,7 @@ struct item_variations_t
       /* deltas are stored in tuples(column based), convert them back into items
        * (row based) delta */
       const tuple_variations_t& tuples = vars[major];
-      unsigned num_rows = tuples.tuple_vars[0].deltas_x.length;
+      unsigned num_rows = var_data_num_rows[major];
       for (const tuple_delta_t& tuple: tuples.tuple_vars)
       {
         if (tuple.deltas_x.length != num_rows)
@@ -1964,6 +2026,19 @@ struct item_variations_t
           if ((!has_long) && (rounded_delta < -65536 || rounded_delta > 65535))
             has_long = true;
         }
+      }
+
+      if (!optimize)
+      {
+        /* assemble a delta_row_encoding_t for this subtable, skip optimization so
+         * chars is not initialized, we only need delta rows for serialization */
+        delta_row_encoding_t obj;
+        for (unsigned r = start_row; r < start_row + num_rows; r++)
+          obj.add_row (&(delta_rows.arrayZ[r]));
+
+        encodings.push (std::move (obj));
+        start_row += num_rows;
+        continue;
       }
 
       for (unsigned minor = 0; minor < num_rows; minor++)
@@ -2003,21 +2078,26 @@ struct item_variations_t
         }
         else
         {
+          if (!chars_idx_map.set (chars, encoding_objs.length))
+            return false;
           delta_row_encoding_t obj (std::move (chars), &row);
           encoding_objs.push (std::move (obj));
-          if (!chars_idx_map.set (chars, encoding_objs.length - 1))
-            return false;
         }
       }
 
       start_row += num_rows;
     }
+
+    /* return directly if no optimization, maintain original VariationIndex so
+     * varidx_map would be empty */
+    if (!optimize) return !encodings.in_error ();
+
     /* sort encoding_objs */
     encoding_objs.qsort ();
 
     /* main algorithm: repeatedly pick 2 best encodings to combine, and combine
      * them */
-    hb_priority_queue_t queue;
+    hb_priority_queue_t<combined_gain_idx_tuple_t> queue;
     unsigned num_todos = encoding_objs.length;
     for (unsigned i = 0; i < num_todos; i++)
     {
@@ -2025,19 +2105,16 @@ struct item_variations_t
       {
         int combining_gain = encoding_objs.arrayZ[i].gain_from_merging (encoding_objs.arrayZ[j]);
         if (combining_gain > 0)
-        {
-          unsigned val = (i << 16) + j;
-          queue.insert (-combining_gain, val);
-        }
+          queue.insert (combined_gain_idx_tuple_t (-combining_gain, i, j), 0);
       }
     }
 
     hb_set_t removed_todo_idxes;
     while (queue)
     {
-      unsigned val = queue.pop_minimum ().second;
-      unsigned j = val & 0xFFFF;
-      unsigned i = (val >> 16) & 0xFFFF;
+      auto t = queue.pop_minimum ().first;
+      unsigned i = t.idx_1;
+      unsigned j = t.idx_2;
 
       if (removed_todo_idxes.has (i) || removed_todo_idxes.has (j))
         continue;
@@ -2078,10 +2155,7 @@ struct item_variations_t
 
         int combined_gain = combined_encoding_obj.gain_from_merging (obj);
         if (combined_gain > 0)
-        {
-          unsigned val = (idx << 16) + encoding_objs.length;
-          queue.insert (-combined_gain, val);
-        }
+          queue.insert (combined_gain_idx_tuple_t (-combined_gain, idx, encoding_objs.length), 0);
       }
 
       encoding_objs.push (std::move (combined_encoding_obj));
@@ -2148,7 +2222,14 @@ struct item_variations_t
     const hb_vector_t<int>** a = (const hb_vector_t<int>**) pa;
     const hb_vector_t<int>** b = (const hb_vector_t<int>**) pb;
 
-    return ((*b)->as_array ()).cmp ((*a)->as_array ());
+    for (unsigned i = 0; i < (*b)->length; i++)
+    {
+      int va = (*a)->arrayZ[i];
+      int vb = (*b)->arrayZ[i];
+      if (va != vb)
+        return va < vb ? -1 : 1;
+    }
+    return 0;
   }
 };
 

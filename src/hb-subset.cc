@@ -461,6 +461,8 @@ _dependencies_satisfied (hb_subset_plan_t *plan, hb_tag_t tag,
   case HB_OT_TAG_vmtx:
   case HB_OT_TAG_maxp:
     return !plan->normalized_coords || !pending_subset_tags.has (HB_OT_TAG_glyf);
+  case HB_OT_TAG_GPOS:
+    return !plan->normalized_coords || plan->all_axes_pinned || !pending_subset_tags.has (HB_OT_TAG_GDEF);
   default:
     return true;
   }
@@ -515,6 +517,8 @@ _subset_table (hb_subset_plan_t *plan,
   case HB_OT_TAG_HVAR: return _subset<const OT::HVAR> (plan, buf);
   case HB_OT_TAG_VVAR: return _subset<const OT::VVAR> (plan, buf);
 #endif
+
+#ifndef HB_NO_VAR
   case HB_OT_TAG_fvar:
     if (plan->user_axes_location.is_empty ()) return _passthrough (plan, tag);
     return _subset<const OT::fvar> (plan, buf);
@@ -527,6 +531,8 @@ _subset_table (hb_subset_plan_t *plan,
   case HB_OT_TAG_MVAR:
     if (plan->user_axes_location.is_empty ()) return _passthrough (plan, tag);
     return _subset<const OT::MVAR> (plan, buf);
+#endif
+
   case HB_OT_TAG_STAT:
     if (!plan->user_axes_location.is_empty ()) return _subset<const OT::STAT> (plan, buf);
     else return _passthrough (plan, tag);

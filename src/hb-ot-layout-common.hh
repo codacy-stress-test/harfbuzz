@@ -191,27 +191,15 @@ struct hb_collect_variation_indices_context_t :
   static return_t default_return_value () { return hb_empty_t (); }
 
   hb_set_t *layout_variation_indices;
-  hb_hashmap_t<unsigned, hb_pair_t<unsigned, int>> *varidx_delta_map;
-  hb_vector_t<int> *normalized_coords;
-  const VariationStore *var_store;
   const hb_set_t *glyph_set;
   const hb_map_t *gpos_lookups;
-  float *store_cache;
 
   hb_collect_variation_indices_context_t (hb_set_t *layout_variation_indices_,
-					  hb_hashmap_t<unsigned, hb_pair_t<unsigned, int>> *varidx_delta_map_,
-					  hb_vector_t<int> *normalized_coords_,
-					  const VariationStore *var_store_,
 					  const hb_set_t *glyph_set_,
-					  const hb_map_t *gpos_lookups_,
-					  float *store_cache_) :
+					  const hb_map_t *gpos_lookups_) :
 					layout_variation_indices (layout_variation_indices_),
-					varidx_delta_map (varidx_delta_map_),
-					normalized_coords (normalized_coords_),
-					var_store (var_store_),
 					glyph_set (glyph_set_),
-					gpos_lookups (gpos_lookups_),
-					store_cache (store_cache_) {}
+					gpos_lookups (gpos_lookups_) {}
 };
 
 template<typename OutputArray>
@@ -1383,10 +1371,20 @@ struct Lookup
 
     if (lookupFlag & LookupFlag::UseMarkFilteringSet)
     {
-      if (unlikely (!c->serializer->extend (out))) return_trace (false);
       const HBUINT16 &markFilteringSet = StructAfter<HBUINT16> (subTable);
-      HBUINT16 &outMarkFilteringSet = StructAfter<HBUINT16> (out->subTable);
-      outMarkFilteringSet = markFilteringSet;
+      hb_codepoint_t *idx;
+      if (!c->plan->used_mark_sets_map.has (markFilteringSet, &idx))
+      {
+        unsigned new_flag = lookupFlag;
+        new_flag &= ~LookupFlag::UseMarkFilteringSet;
+        out->lookupFlag = new_flag;
+      }
+      else
+      {
+        if (unlikely (!c->serializer->extend (out))) return_trace (false);
+        HBUINT16 &outMarkFilteringSet = StructAfter<HBUINT16> (out->subTable);
+        outMarkFilteringSet = *idx;
+      }
     }
 
     // Always keep the lookup even if it's empty. The rest of layout subsetting depends on lookup
@@ -2306,9 +2304,9 @@ struct delta_row_encoding_t
   /* each byte represents a region, value is one of 0/1/2/4, which means bytes
    * needed for this region */
   hb_vector_t<uint8_t> chars;
-  unsigned width;
+  unsigned width = 0;
   hb_vector_t<uint8_t> columns;
-  unsigned overhead;
+  unsigned overhead = 0;
   hb_vector_t<const hb_vector_t<int>*> items;
 
   delta_row_encoding_t () = default;
@@ -2317,7 +2315,7 @@ struct delta_row_encoding_t
                         delta_row_encoding_t ()
 
   {
-    chars = chars_;
+    chars = std::move (chars_);
     width = get_width ();
     columns = get_columns ();
     overhead = get_chars_overhead (columns);
@@ -2335,8 +2333,9 @@ struct delta_row_encoding_t
     bool long_words = false;
 
     /* 0/1/2 byte encoding */
-    for (int v: row)
+    for (int i = row.length - 1; i >= 0; i--)
     {
+      int v =  row.arrayZ[i];
       if (v == 0)
         ret.push (0);
       else if (v > 32767 || v < -32768)
@@ -2355,8 +2354,9 @@ struct delta_row_encoding_t
 
     /* redo, 0/2/4 bytes encoding */
     ret.reset ();
-    for (int v: row)
+    for (int i = row.length - 1; i >= 0; i--)
     {
+      int v =  row.arrayZ[i];
       if (v == 0)
         ret.push (0);
       else if (v > 32767 || v < -32768)
@@ -3978,23 +3978,13 @@ struct VariationDevice
     auto *out = c->embed (this);
     if (unlikely (!out)) return_trace (nullptr);
 
-    unsigned new_idx = hb_first (*v);
-    out->varIdx = new_idx;
+    if (!c->check_assign (out->varIdx, hb_first (*v), HB_SERIALIZE_ERROR_INT_OVERFLOW))
+      return_trace (nullptr);
     return_trace (out);
   }
 
   void collect_variation_index (hb_collect_variation_indices_context_t *c) const
-  {
-    c->layout_variation_indices->add (varIdx);
-    int delta = 0;
-    if (c->normalized_coords && c->var_store)
-      delta = roundf (c->var_store->get_delta (varIdx, c->normalized_coords->arrayZ,
-                                               c->normalized_coords->length, c->store_cache));
-
-    /* set new varidx to HB_OT_LAYOUT_NO_VARIATIONS_INDEX here, will remap
-     * varidx later*/
-    c->varidx_delta_map->set (varIdx, hb_pair_t<unsigned, int> (HB_OT_LAYOUT_NO_VARIATIONS_INDEX, delta));
-  }
+  { c->layout_variation_indices->add (varIdx); }
 
   bool sanitize (hb_sanitize_context_t *c) const
   {

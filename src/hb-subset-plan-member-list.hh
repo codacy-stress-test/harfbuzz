@@ -70,6 +70,9 @@ HB_SUBSET_PLAN_MEMBER (hb_set_t, _glyphset_colred)
 HB_SUBSET_PLAN_MEMBER (hb_map_t, gsub_lookups)
 HB_SUBSET_PLAN_MEMBER (hb_map_t, gpos_lookups)
 
+//use_mark_sets mapping: old->new
+HB_SUBSET_PLAN_MEMBER (hb_map_t, used_mark_sets_map)
+
 //active langsys we'd like to retain
 HB_SUBSET_PLAN_MEMBER (hb_hashmap_t E(<unsigned, hb::unique_ptr<hb_set_t>>), gsub_langsys)
 HB_SUBSET_PLAN_MEMBER (hb_hashmap_t E(<unsigned, hb::unique_ptr<hb_set_t>>), gpos_langsys)
@@ -92,7 +95,7 @@ HB_SUBSET_PLAN_MEMBER (hb_map_t, colrv1_layers)
 HB_SUBSET_PLAN_MEMBER (hb_map_t, colr_palettes)
 
 //Old layout item variation index -> (New varidx, delta) mapping
-HB_SUBSET_PLAN_MEMBER (hb_hashmap_t E(<unsigned, hb_pair_t E(<unsigned, int>)>), layout_variation_idx_delta_map)
+HB_SUBSET_PLAN_MEMBER (mutable hb_hashmap_t E(<unsigned, hb_pair_t E(<unsigned, int>)>), layout_variation_idx_delta_map)
 
 //gdef varstore retained varidx mapping
 HB_SUBSET_PLAN_MEMBER (hb_vector_t<hb_inc_bimap_t>, gdef_varstore_inner_maps)

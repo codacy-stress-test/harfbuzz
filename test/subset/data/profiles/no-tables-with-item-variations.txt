@@ -1,1 +1,0 @@
---drop-tables+=HVAR,VVAR,GDEF,COLR,GPOS

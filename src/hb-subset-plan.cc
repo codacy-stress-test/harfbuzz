@@ -399,34 +399,20 @@ _collect_layout_variation_indices (hb_subset_plan_t* plan)
     return;
   }
 
-  const OT::VariationStore *var_store = nullptr;
   hb_set_t varidx_set;
-  float *store_cache = nullptr;
-  bool collect_delta = plan->pinned_at_default ? false : true;
-  if (collect_delta)
-  {
-    if (gdef->has_var_store ())
-    {
-      var_store = &(gdef->get_var_store ());
-      store_cache = var_store->create_cache ();
-    }
-  }
-
   OT::hb_collect_variation_indices_context_t c (&varidx_set,
-                                                &plan->layout_variation_idx_delta_map,
-                                                plan->normalized_coords ? &(plan->normalized_coords) : nullptr,
-                                                var_store,
                                                 &plan->_glyphset_gsub,
-                                                &plan->gpos_lookups,
-                                                store_cache);
+                                                &plan->gpos_lookups);
   gdef->collect_variation_indices (&c);
 
   if (hb_ot_layout_has_positioning (plan->source))
     gpos->collect_variation_indices (&c);
 
-  var_store->destroy_cache (store_cache);
-
-  gdef->remap_layout_variation_indices (&varidx_set, &plan->layout_variation_idx_delta_map);
+  gdef->remap_layout_variation_indices (&varidx_set,
+                                        plan->normalized_coords,
+                                        !plan->pinned_at_default,
+                                        plan->all_axes_pinned,
+                                        &plan->layout_variation_idx_delta_map);
 
   unsigned subtable_count = gdef->has_var_store () ? gdef->get_var_store ().get_sub_table_count () : 0;
   _generate_varstore_inner_maps (varidx_set, subtable_count, plan->gdef_varstore_inner_maps);
@@ -479,6 +465,24 @@ _math_closure (hb_subset_plan_t *plan,
   math.destroy ();
 }
 
+static inline void
+_remap_used_mark_sets (hb_subset_plan_t *plan,
+                       hb_map_t& used_mark_sets_map)
+{
+  hb_blob_ptr_t<OT::GDEF> gdef = plan->source_table<OT::GDEF> ();
+
+  if (!gdef->has_data () || !gdef->has_mark_glyph_sets ())
+  {
+    gdef.destroy ();
+    return;
+  }
+
+  hb_set_t used_mark_sets;
+  gdef->get_mark_glyph_sets ().collect_used_mark_sets (plan->_glyphset_gsub, used_mark_sets);
+  gdef.destroy ();
+
+  _remap_indexes (&used_mark_sets, &used_mark_sets_map);
+}
 
 static inline void
 _remove_invalid_gids (hb_set_t *glyphs,
@@ -1173,6 +1177,9 @@ hb_subset_plan_t::hb_subset_plan_t (hb_face_t *face,
   bounds_height_vec.resize (_num_output_glyphs, false);
   for (auto &v : bounds_height_vec)
     v = 0xFFFFFFFF;
+
+  if (!drop_tables.has (HB_OT_TAG_GDEF))
+    _remap_used_mark_sets (this, used_mark_sets_map);
 
   if (unlikely (in_error ()))
     return;

@@ -50,6 +50,7 @@ tests = [
   'cbdt',
   'variable',
   'glyph_names',
+  'glyph_map',
   'post',
   '32bit_var_store',
   'pin_all_at_default',
@@ -72,6 +73,7 @@ if get_option('experimental_api')
     'glyf_partial_instancing',
     'mvar_partial_instance',
     'update_def_wght',
+    'empty_region_vardata',
     ]
 endif
 
