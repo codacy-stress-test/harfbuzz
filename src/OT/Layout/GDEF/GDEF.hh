@@ -291,6 +291,7 @@ struct CaretValue
   {
     TRACE_SANITIZE (this);
     if (!u.format.sanitize (c)) return_trace (false);
+    hb_barrier ();
     switch (u.format) {
     case 1: return_trace (u.format1.sanitize (c));
     case 2: return_trace (u.format2.sanitize (c));
@@ -556,6 +557,7 @@ struct MarkGlyphSets
   {
     TRACE_SANITIZE (this);
     if (!u.format.sanitize (c)) return_trace (false);
+    hb_barrier ();
     switch (u.format) {
     case 1: return_trace (u.format1.sanitize (c));
     default:return_trace (true);
@@ -630,6 +632,7 @@ struct GDEFVersion1_2
 		  attachList.sanitize (c, this) &&
 		  ligCaretList.sanitize (c, this) &&
 		  markAttachClassDef.sanitize (c, this) &&
+		  hb_barrier () &&
 		  (version.to_int () < 0x00010002u || markGlyphSetsDef.sanitize (c, this)) &&
 		  (version.to_int () < 0x00010003u || varStore.sanitize (c, this)));
   }
@@ -664,7 +667,6 @@ struct GDEFVersion1_2
     out->version.minor = version.minor;
     bool subset_glyphclassdef = out->glyphClassDef.serialize_subset (c, glyphClassDef, this, nullptr, false, true);
     bool subset_attachlist = out->attachList.serialize_subset (c, attachList, this);
-    bool subset_ligcaretlist = out->ligCaretList.serialize_subset (c, ligCaretList, this);
     bool subset_markattachclassdef = out->markAttachClassDef.serialize_subset (c, markAttachClassDef, this, nullptr, false, true);
 
     bool subset_markglyphsetsdef = false;
@@ -702,9 +704,11 @@ struct GDEFVersion1_2
         subset_varstore = out->varStore.serialize_subset (c, varStore, this, c->plan->gdef_varstore_inner_maps.as_array ());
     }
 
+
     if (subset_varstore)
     {
       out->version.minor = 3;
+      c->plan->has_gdef_varstore = true;
     } else if (subset_markglyphsetsdef) {
       out->version.minor = 2;
       c->serializer->revert (snapshot_version2);
@@ -712,6 +716,8 @@ struct GDEFVersion1_2
       out->version.minor = 0;
       c->serializer->revert (snapshot_version0);
     }
+
+    bool subset_ligcaretlist = out->ligCaretList.serialize_subset (c, ligCaretList, this);
 
     return_trace (subset_glyphclassdef || subset_attachlist ||
 		  subset_ligcaretlist || subset_markattachclassdef ||
@@ -747,6 +753,7 @@ struct GDEF
   {
     TRACE_SANITIZE (this);
     if (unlikely (!u.version.sanitize (c))) return_trace (false);
+    hb_barrier ();
     switch (u.version.major) {
     case 1: return_trace (u.version1.sanitize (c));
 #ifndef HB_NO_BEYOND_64K

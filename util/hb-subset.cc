@@ -751,7 +751,7 @@ parse_instance (const char *name,
         {
           g_set_error (error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
                        "Error: axis: '%c%c%c%c', not present in fvar or invalid range with min:%.6f max:%.6f",
-                       HB_UNTAG (axis_tag), min_val, max_val);
+                       HB_UNTAG (axis_tag), (double) min_val, (double) max_val);
           return false;
         }
     }
@@ -1024,15 +1024,19 @@ subset_main_t::add_options ()
     {"drop-tables",	0, 0, G_OPTION_ARG_CALLBACK, (gpointer) &parse_drop_tables,	"Drop the specified tables. Use --drop-tables-=... to subtract from the current set.", "list of string table tags or *"},
     {"drop-tables+",	0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_CALLBACK, (gpointer) &parse_drop_tables,	"Drop the specified tables.", "list of string table tags or *"},
     {"drop-tables-",	0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_CALLBACK, (gpointer) &parse_drop_tables,	"Drop the specified tables.", "list of string table tags or *"},
-#ifndef HB_NO_VAR
-    {"instance",	0, 0, G_OPTION_ARG_CALLBACK, (gpointer) &parse_instance,
-     "(Partially|Fully) Instantiate a variable font. A location consists of the tag of a variation axis, followed by '=', followed by a\n"
-     "number or the literal string 'drop'\n"
-     "                                                        "
-     "For example: --instance=\"wdth=100 wght=200\" or --instance=\"wdth=drop\"\n"
-     "                                                        "
-     "Note: currently only fully instancing is supported\n",
-     "list of comma separated axis-locations"},
+#ifndef HB_NO_VAR    
+     {"variations",	0, 0, G_OPTION_ARG_CALLBACK, (gpointer) &parse_instance,
+     "(Partially|Fully) Instantiate a variable font. A location consists of the tag "
+     "of a variation axis, followed by '=', followed by a number or the literal "
+     "string 'drop'. For example: --variations=\"wdth=100 wght=200\" or --instance=\"wdth=drop\""
+#ifndef HB_EXPERIMENTAL_API
+     "\n\nNote: currently only full instancing is supported unless this util has been compiled with experimental api enabled."
+#endif
+     ,
+     "list of comma separated axis-locations."
+     },
+     {"instance",	0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_CALLBACK, (gpointer) &parse_instance,
+     "Alias for --variations.", "list of comma separated axis-locations"},
 #endif
     {nullptr}
   };
