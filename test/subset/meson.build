@@ -66,6 +66,7 @@ tests = [
   'collect_name_ids',
   'instantiate_colrv1',
   'instantiate_cff2_update_metrics',
+  'layout.empty_ligature_offset',
 ]
 
 if get_option('experimental_api')
@@ -78,6 +79,7 @@ if get_option('experimental_api')
     'gdef_partial_instance',
     'value_format_partial_instance',
     'feature_variation_instance_collect_lookups',
+    'iftb_requirements'
     ]
 endif
 
