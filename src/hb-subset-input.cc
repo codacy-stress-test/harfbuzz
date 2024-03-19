@@ -51,7 +51,6 @@ hb_subset_input_t::hb_subset_input_t ()
     HB_TAG ('k', 'e', 'r', 'n'),
 
     // Copied from fontTools:
-    HB_TAG ('B', 'A', 'S', 'E'),
     HB_TAG ('J', 'S', 'T', 'F'),
     HB_TAG ('D', 'S', 'I', 'G'),
     HB_TAG ('E', 'B', 'D', 'T'),
@@ -430,7 +429,7 @@ hb_subset_input_keep_everything (hb_subset_input_t *input)
  *
  * Return value: `true` if success, `false` otherwise
  *
- * XSince: REPLACEME
+ * Since: 8.3.1
  **/
 HB_EXTERN hb_bool_t
 hb_subset_input_pin_all_axes_to_default (hb_subset_input_t  *input,
