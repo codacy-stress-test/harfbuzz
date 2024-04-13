@@ -703,6 +703,38 @@ struct ClassTable
   DEFINE_SIZE_ARRAY (4, classArray);
 };
 
+struct SubtableGlyphCoverage
+{
+  bool sanitize (hb_sanitize_context_t *c, unsigned subtable_count) const
+  {
+    TRACE_SANITIZE (this);
+
+    if (unlikely (!c->check_array (&subtableOffsets, subtable_count)))
+      return_trace (false);
+
+    unsigned bytes = (c->get_num_glyphs () + CHAR_BIT - 1) / CHAR_BIT;
+    for (unsigned i = 0; i < subtable_count; i++)
+    {
+      uint32_t offset = (uint32_t) subtableOffsets[i];
+      if (offset == 0 || offset == 0xFFFFFFFF)
+        continue;
+      if (unlikely (!subtableOffsets[i].sanitize (c, this, bytes)))
+        return_trace (false);
+    }
+
+    return_trace (true);
+  }
+  protected:
+  UnsizedArrayOf<NNOffset32To<UnsizedArrayOf<HBUINT8>>> subtableOffsets;
+					    /* Array of offsets from the beginning of the
+					     * subtable glyph coverage table to the glyph
+					     * coverage bitfield for a given subtable; there
+					     * is one offset for each subtable in the chain */
+  /* UnsizedArrayOf<HBUINT8> coverageBitfields; *//* The individual coverage bitfields. */
+  public:
+  DEFINE_SIZE_ARRAY (0, subtableOffsets);
+};
+
 struct ObsoleteTypes
 {
   static constexpr bool extended = false;
@@ -862,22 +894,22 @@ struct StateTableDriver
       {
           /* 2c. */
           const auto wouldbe_entry = machine.get_entry(StateTableT::STATE_START_OF_TEXT, klass);
-      
+
           /* 2c'. */
           if (c->is_actionable (this, wouldbe_entry))
               return false;
-      
+
           /* 2c". */
           return next_state == machine.new_state(wouldbe_entry.newState)
               && (entry.flags & context_t::DontAdvance) == (wouldbe_entry.flags & context_t::DontAdvance);
       };
-      
+
       const auto is_safe_to_break = [&]()
       {
           /* 1. */
           if (c->is_actionable (this, entry))
               return false;
-      
+
           /* 2. */
           // This one is meh, I know...
           const auto ok =
@@ -886,7 +918,7 @@ struct StateTableDriver
               || is_safe_to_break_extra();
           if (!ok)
               return false;
-      
+
           /* 3. */
           return !c->is_actionable (this, machine.get_entry (state, StateTableT::CLASS_END_OF_TEXT));
       };
