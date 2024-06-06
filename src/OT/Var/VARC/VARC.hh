@@ -124,7 +124,7 @@ struct VARC
       return true;
     (*edges_left)--;
 
-    if (visited->has (glyph))
+    if (visited->has (glyph) || visited->in_error ())
       return true;
     visited->add (glyph);
 
@@ -168,6 +168,7 @@ struct VARC
 		  version.major == 1 &&
 		  coverage.sanitize (c, this) &&
 		  varStore.sanitize (c, this) &&
+		  conditionList.sanitize (c, this) &&
 		  axisIndicesList.sanitize (c, this) &&
 		  glyphRecords.sanitize (c, this));
   }
