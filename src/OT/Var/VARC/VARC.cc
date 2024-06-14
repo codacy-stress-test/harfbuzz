@@ -148,7 +148,7 @@ VarComponent::get_path_at (hb_font_t *font,
 
 #define READ_UINT32VAR(name) \
   HB_STMT_START { \
-    if (unlikely (end - record < HBUINT32VAR::min_size)) return hb_ubytes_t (); \
+    if (unlikely (unsigned (end - record) < HBUINT32VAR::min_size)) return hb_ubytes_t (); \
     hb_barrier (); \
     auto &varint = * (const HBUINT32VAR *) record; \
     unsigned size = varint.get_size (); \
@@ -247,7 +247,7 @@ VarComponent::get_path_at (hb_font_t *font,
 	if (flags & (unsigned) flags_t::flag) \
 	{ \
 	  static_assert (type::static_size == HBINT16::static_size, ""); \
-	  if (unlikely (end - record < HBINT16::static_size)) \
+	  if (unlikely (unsigned (end - record) < HBINT16::static_size)) \
 	    return hb_ubytes_t (); \
 	  hb_barrier (); \
 	  transform.name = * (const HBINT16 *) record; \
