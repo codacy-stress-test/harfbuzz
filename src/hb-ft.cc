@@ -931,11 +931,15 @@ hb_ft_paint_glyph (hb_font_t *font,
   hb_lock_t lock (ft_font->lock);
   FT_Face ft_face = ft_font->ft_face;
 
+  FT_Long load_flags = ft_font->load_flags | FT_LOAD_NO_BITMAP | FT_LOAD_COLOR;
+#if (FREETYPE_MAJOR*10000 + FREETYPE_MINOR*100 + FREETYPE_PATCH) >= 21301
+  load_flags |= FT_LOAD_NO_SVG;
+#endif
+
   /* We release the lock before calling into glyph callbacks, such that
    * eg. draw API can call back into the face.*/
 
-  if (unlikely (FT_Load_Glyph (ft_face, gid,
-			       ft_font->load_flags | FT_LOAD_COLOR)))
+  if (unlikely (FT_Load_Glyph (ft_face, gid, load_flags)))
     return;
 
   if (ft_face->glyph->format == FT_GLYPH_FORMAT_OUTLINE)
@@ -1520,13 +1524,13 @@ destroy_ft_library (void *arg)
  * Creates an #hb_face_t face object from the specified
  * font file and face index.
  *
- * This is similar in functionality to hb_face_create_for_from_file_or_fail(),
+ * This is similar in functionality to hb_face_create_from_file_or_fail(),
  * but uses the FreeType library for loading the font file.
  *
  * Return value: (transfer full): The new face object, or `NULL` if
  * no face is found at the specified index or the file cannot be read.
  *
- * XSince: REPLACEME
+ * Since: 10.1.0
  */
 hb_face_t *
 hb_ft_face_create_from_file_or_fail (const char   *file_name,

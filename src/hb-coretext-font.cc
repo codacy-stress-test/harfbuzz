@@ -36,6 +36,8 @@
 
 #if MAC_OS_X_VERSION_MIN_REQUIRED < 101100
 #  define kCTFontOrientationDefault kCTFontDefaultOrientation
+#  define kCTFontOrientationHorizontal kCTFontHorizontalOrientation
+#  define kCTFontOrientationVertical kCTFontVerticalOrientation
 #endif
 
 #define MAX_GLYPHS 64u
@@ -441,7 +443,7 @@ _hb_coretext_get_font_funcs ()
  * <note>Note: Internally, this function creates a CTFont.
 * </note>
  *
- * XSince: REPLACEME
+ * Since: 10.1.0
  **/
 void
 hb_coretext_font_set_funcs (hb_font_t *font)
